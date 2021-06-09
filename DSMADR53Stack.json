@@ -1,0 +1,610 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "Launch AWS Managed Microsoft AD, Standard or Enterprise edition. Store the Admin password as a secret in Secrets Manager and creates Route 53 Resolver outbound endpoints with DNS forwarding rule. Optional configurations available: create a reverse DNS lookup zone.",
+	"Parameters": {
+		"DSEditionParameter": {
+			"Description": "AWS Managed Microsoft AD is available in two editions: Standard and Enterprise.",
+			"Type": "String",
+			"AllowedValues": [
+				"Standard",
+				"Enterprise"
+			],
+			"Default": "Standard"
+		},
+		"DSNameParameter": {
+			"Description": "The fully qualified domain name for the AWS Managed Microsoft AD directory, such as corp.example.com. This name will resolve inside your VPC only. It does not need to be publicly resolvable.",
+			"Type": "String",
+			"Default": "corp.example.com",
+			"AllowedPattern": "^([a-zA-Z0-9]+[\\.-])+([a-zA-Z0-9])+$"
+		},
+		"DSNetBIOSParameter": {
+			"Description": "The NetBIOS name for your domain, such as CORP. If you don't specify a NetBIOS name, it will default to the first part of your directory DNS. For example, CORP for the directory DNS corp.example.com.",
+			"Type": "String",
+			"Default": "CORP",
+			"AllowedPattern": "[a-zA-Z0-9\\-]+",
+			"MaxLength": "15",
+			"MinLength": "1",
+			"ConstraintDescription": "must only contain letters (uppercase and lowercase) and numbers"
+		},
+		"DSPasswordParameter": {
+			"Description": "The password for the default administrative user named Admin. The directory administrator password is case-sensitive and must be between 8 and 64 characters in length, inclusive. It must also contain at least one character from three of the following four categories: lowercase letters (a-z), uppercase letters (A-Z), numbers (0-9), or non-alphanumeric characters (~!@#$%^&*_-+=`|\\(){}[]:;\"'<>,.?/).",
+			"Type": "String",
+			"NoEcho": "true",
+			"AllowedPattern": "(?=^.{6,255}$)((?=.*\\d)(?=.*[A-Z])(?=.*[a-z])|(?=.*\\d)(?=.*[^A-Za-z0-9])(?=.*[a-z])|(?=.*[^A-Za-z0-9])(?=.*[A-Z])(?=.*[a-z])|(?=.*\\d)(?=.*[A-Z])(?=.*[^A-Za-z0-9]))^.*",
+			"MaxLength": "64",
+			"MinLength": "8"
+		},
+		"DSVpcIdParameter": {
+			"Type": "AWS::EC2::VPC::Id",
+			"Description": "Virtual Private Clouds (VPC) in your account."
+		},
+		"DSSubnetIdsParameter": {
+			"Type": "List<AWS::EC2::Subnet::Id>",
+			"Description": "Subnets in your Virtual Private Cloud (VPC)."
+		},
+		"R53RROutboundSecurityGroupParameter": {
+			"Type": "List<AWS::EC2::SecurityGroup::Id>",
+			"Description": "Security groups in your Virtual Private Cloud (VPC) for the Route 53 Resolver outbound endpoints."
+		},
+		"R53RRrDNSConditionParameter": {
+			"Description": "Reverse lookup zones are used to resolve IP addresses to a hostname. NOTE: selecting Yes will create an AWS Lambda function.",
+			"Type": "String",
+			"AllowedValues": [
+				"No",
+				"Yes"
+			],
+			"Default": "No"
+		},
+		"R53RRrDNSParameter": {
+			"Description": "Enter the reverse DNS lookup zone based on your VPC CIDR range. For example, if your VPC CIDR range is \"10.0.0.0/23\", create two entries: \"0.0.10.in-addr.arpa\" and \"1.0.10.in-addr.arpa\".",
+			"Type": "String",
+			"Default": "0.0.10.in-addr.arpa,1.0.10.in-addr.arpa"
+		}
+	},
+	"Metadata": {
+		"AWS::CloudFormation::Interface": {
+			"ParameterGroups": [
+				{
+					"Label": {
+						"default": "Directory Services Configuration"
+					},
+					"Parameters": [
+						"DSVpcIdParameter",
+						"DSEditionParameter",
+						"DSNameParameter",
+						"DSNetBIOSParameter",
+						"DSPasswordParameter",
+						"DSSubnetIdsParameter"
+					]
+				},
+				{
+					"Label": {
+						"default": "Route 53 Resolver Configuration"
+					},
+					"Parameters": [
+						"R53RROutboundSecurityGroupParameter"
+					]
+				},
+				{
+					"Label": {
+						"default": "Optional Configurations"
+					},
+					"Parameters": [
+						"R53RRrDNSConditionParameter",
+						"R53RRrDNSParameter"
+					]
+				}
+			],
+			"ParameterLabels": {
+				"DSEditionParameter": {
+					"default": "Select the edition of Directory Service you want to host."
+				},
+				"DSNameParameter": {
+					"default": "Enter the FQDN of the AD environment."
+				},
+				"DSNetBIOSParameter": {
+					"default": "Enter the NETBIOS name of the AD environment."
+				},
+				"DSPasswordParameter": {
+					"default": "Enter the password for the default Admin user."
+				},
+				"DSVpcIdParameter": {
+					"default": "Select the VPC for the AD environment."
+				},
+				"DSSubnetIdsParameter": {
+					"default": "Select two subnets for the AD environment. (Each subnet must be in different Availability Zones.)"
+				},
+				"R53RROutboundSecurityGroupParameter": {
+					"default": "Select the security group to associate with the Route 53 Resolver outbound endpoints."
+				},
+				"R53RRrDNSConditionParameter": {
+					"default": "Select \"Yes\" to create a reverse DNS lookup zone to be forwarded to your Managed Microsoft AD or self-managed AD. (Default is set to No.)"
+				},
+				"R53RRrDNSParameter": {
+					"default": "Enter the reverse DNS lookup zone."
+				}
+			}
+		}
+	},
+	"Conditions": {
+		"CreateReverseDNS": {
+			"Fn::Equals": [
+				{
+					"Ref": "R53RRrDNSConditionParameter"
+				},
+				"Yes"
+			]
+		}
+	},
+	"Resources": {
+		"DSMMSADSecret": {
+			"Type": "AWS::SecretsManager::Secret",
+			"Properties": {
+				"Description": "This secret has the Admin password for the Managed Microsoft AD.",
+				"SecretString": {
+					"Fn::Sub": [
+						"{\"password\":\"${DSPassword}\"}",
+						{
+							"DSPassword": {
+								"Ref": "DSPasswordParameter"
+							}
+						}
+					]
+				}
+			}
+		},
+		"DSMMSAD": {
+			"Type": "AWS::DirectoryService::MicrosoftAD",
+			"Properties": {
+				"Name": {
+					"Ref": "DSNameParameter"
+				},
+				"Password": {
+					"Fn::Join": [
+						"",
+						[
+							"{{resolve:secretsmanager:",
+							{
+								"Ref": "DSMMSADSecret"
+							},
+							":SecretString:password}}"
+						]
+					]
+				},
+				"ShortName": {
+					"Ref": "DSNetBIOSParameter"
+				},
+				"Edition": {
+					"Ref": "DSEditionParameter"
+				},
+				"VpcSettings": {
+					"SubnetIds": [
+						{
+							"Fn::Select": [
+								"0",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						},
+						{
+							"Fn::Select": [
+								"1",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						}
+					],
+					"VpcId": {
+						"Ref": "DSVpcIdParameter"
+					}
+				}
+			}
+		},
+		"R53RROutbound": {
+			"Type": "AWS::Route53Resolver::ResolverEndpoint",
+			"Properties": {
+				"Direction": "Outbound",
+				"IpAddresses": [
+					{
+						"SubnetId": {
+							"Fn::Select": [
+								"0",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						}
+					},
+					{
+						"SubnetId": {
+							"Fn::Select": [
+								"1",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						}
+					}
+				],
+				"SecurityGroupIds": [
+					{
+						"Fn::Select": [
+							"0",
+							{
+								"Ref": "R53RROutboundSecurityGroupParameter"
+							}
+						]
+					}
+				]
+			}
+		},
+		"RR53RuleDomainDNS": {
+			"Type": "AWS::Route53Resolver::ResolverRule",
+			"Properties": {
+				"Name": {
+					"Fn::Join": [
+						"",
+						[
+							{
+								"Ref": "AWS::StackName"
+							},
+							"-forward"
+						]
+					]
+				},
+				"DomainName": {
+					"Ref": "DSNameParameter"
+				},
+				"ResolverEndpointId": {
+					"Ref": "R53RROutbound"
+				},
+				"RuleType": "FORWARD",
+				"TargetIps": [
+					{
+						"Ip": {
+							"Fn::Select": [
+								"0",
+								{
+									"Fn::GetAtt": [
+										"DSMMSAD",
+										"DnsIpAddresses"
+									]
+								}
+							]
+						}
+					},
+					{
+						"Ip": {
+							"Fn::Select": [
+								"1",
+								{
+									"Fn::GetAtt": [
+										"DSMMSAD",
+										"DnsIpAddresses"
+									]
+								}
+							]
+						}
+					}
+				]
+			}
+		},
+		"RR53RRAssocDomainDNS": {
+			"Type": "AWS::Route53Resolver::ResolverRuleAssociation",
+			"Properties": {
+				"ResolverRuleId": {
+					"Ref": "RR53RuleDomainDNS"
+				},
+				"VPCId": {
+					"Ref": "DSVpcIdParameter"
+				}
+			}
+		},
+		"R53RRrDNSLambdaExecutionResource": {
+			"Type": "AWS::IAM::Role",
+			"Condition": "CreateReverseDNS",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Principal": {
+								"Service": [
+									"lambda.amazonaws.com"
+								]
+							},
+							"Action": [
+								"sts:AssumeRole"
+							]
+						}
+					]
+				},
+				"Path": "/",
+				"ManagedPolicyArns": [
+					"arn:aws:iam::aws:policy/AWSLambdaExecute",
+					"arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+				],
+				"Description": "New IAM role configure Lambda execution and Route 53 Resolver permissions.",
+				"Policies": [
+					{
+						"PolicyName": "CustomRoute53ResolverPolicyCFN",
+						"PolicyDocument": {
+							"Version": "2012-10-17",
+							"Statement": [
+								{
+									"Effect": "Allow",
+									"Action": [
+										"route53resolver:GetResolverRuleAssociation",
+										"route53resolver:PutResolverRulePolicy",
+										"route53resolver:AssociateResolverEndpointIpAddress",
+										"route53resolver:UpdateResolverRule",
+										"route53resolver:GetResolverRulePolicy",
+										"route53resolver:DisassociateResolverRule",
+										"route53resolver:CreateResolverEndpoint",
+										"route53resolver:DisassociateResolverEndpointIpAddress",
+										"route53resolver:GetResolverRule",
+										"route53resolver:DeleteResolverEndpoint",
+										"route53resolver:DeleteResolverRule",
+										"route53resolver:AssociateResolverRule",
+										"route53resolver:GetResolverEndpoint",
+										"route53resolver:ListResolverEndpointIpAddresses",
+										"route53resolver:UpdateResolverEndpoint",
+										"route53resolver:CreateResolverRule"
+									],
+									"Resource": [
+										"arn:aws:route53resolver:*:497488328043:resolver-endpoint/*",
+										"arn:aws:route53resolver:*:497488328043:resolver-rule/*"
+									]
+								},
+								{
+									"Effect": "Allow",
+									"Action": [
+										"route53resolver:ListResolverRules",
+										"route53resolver:ListResolverRuleAssociations",
+										"route53resolver:ListResolverEndpoints",
+										"ec2:DescribeSubnets",
+										"ec2:CreateNetworkInterface",
+										"ec2:DeleteNetworkInterface",
+										"ec2:ModifyNetworkInterfaceAttribute",
+										"ec2:DescribeNetworkInterfaces",
+										"ec2:CreateNetworkInterfacePermission",
+										"ec2:DescribeSecurityGroups",
+										"ec2:DescribeVpcs",
+										"ec2:DescribeAvailabilityZones",
+										"ec2:AssignPrivateIpAddresses",
+										"ec2:UnassignPrivateIpAddresses"
+									],
+									"Resource": "*"
+								}
+							]
+						}
+					}
+				]
+			}
+		},
+		"R53RRrDNSFunction": {
+			"Type": "AWS::Lambda::Function",
+			"Condition": "CreateReverseDNS",
+			"Properties": {
+				"Code": {
+					"ZipFile": {
+						"Fn::Join": [
+							"\n",
+							[
+								"import boto3",
+								"import cfnresponse",
+								"import json",
+								"import logging",
+								"import os",
+								"import random",
+								"import string",
+								"import time",
+								"import threading",
+								"r53r_client = boto3.client('route53resolver')",
+								"lambda_client = boto3.client('lambda')",
+								"function_name = os.environ['AWS_LAMBDA_FUNCTION_NAME']",
+								"def update(list1,list2):",
+								"    lambda_client.update_function_configuration(FunctionName = function_name,Environment = {'Variables': {'cr_id' : list1,'delete': list2}})",
+								"def create_r53rrule(vpc_id,rdns_var,event):",
+								"    r53rr_outbound_endpoint = event['ResourceProperties']['r53rr_outbound_endpoint']",
+								"    stack_name = event['ResourceProperties']['stack_name']",
+								"    target_ip_addr1 = event['ResourceProperties']['target_ip_addr1']",
+								"    target_ip_addr2 = event['ResourceProperties']['target_ip_addr2']",
+								"    crid_list = []",
+								"    del_list = []",
+								"    if event['RequestType'] == 'Update':",
+								"        old_rdns = event['OldResourceProperties']['rdns_variables']",
+								"        old_rdns = (old_rdns.split(','))",
+								"        for y in old_rdns:",
+								"            var = r53r_client.list_resolver_rules(Filters=[{'Name':'DomainName','Values': [y,]}])['ResolverRules']",
+								"            if var != []:",
+								"                del_list += [str(var[0]['CreatorRequestId'])]",
+								"                del_r53rrule(vpc_id)",
+								"    for x in rdns_var:",
+								"        rdns_domain = x",
+								"        letters = string.ascii_lowercase",
+								"        crid_str = ''.join(random.choice(letters) for i in range(8))",
+								"        r53rule_name = stack_name + \"-rdns-\" + crid_str",
+								"        r53rule = r53r_client.create_resolver_rule(CreatorRequestId = crid_str,Name = r53rule_name,RuleType = \"FORWARD\",DomainName = rdns_domain,TargetIps = [{'Ip': target_ip_addr1},{'Ip': target_ip_addr2}],ResolverEndpointId = r53rr_outbound_endpoint)",
+								"        rr_id = r53rule['ResolverRule']['Id']",
+								"        r53r_client.associate_resolver_rule(ResolverRuleId = rr_id,VPCId = vpc_id)",
+								"        time.sleep(10)",
+								"        crid_list += [crid_str]",
+								"    if event['RequestType'] == 'Create':",
+								"        del_list += ['none']",
+								"    new_crid_list = ','.join(map(str, crid_list))",
+								"    new_del_list = ','.join(map(str, del_list))",
+								"    update(new_crid_list,new_del_list)",
+								"def del_r53rrule(vpc_id):",
+								"    var_env = os.environ['delete']",
+								"    var_env_update = var_env",
+								"    if var_env == \"none\":",
+								"        var_env = os.environ['cr_id']",
+								"    else:",
+								"        var_env_update = os.environ['cr_id']",
+								"    none = \"none\"",
+								"    update(var_env_update,none)",
+								"    var_env = (var_env.split(','))",
+								"    for x in var_env:",
+								"        rr_id_exists = r53r_client.list_resolver_rules(Filters=[{'Name':'CreatorRequestId','Values': [x,]}])['ResolverRules']",
+								"        if rr_id_exists != []:",
+								"            rr_id = rr_id_exists[0]['Id']",
+								"            r53r_client.disassociate_resolver_rule(VPCId = vpc_id, ResolverRuleId = rr_id)",
+								"            while r53r_client.list_resolver_rule_associations(Filters=[{'Name':'VPCId','Values': [vpc_id,]},{'Name': 'ResolverRuleId','Values':[rr_id,]}])['ResolverRuleAssociations'] != []:",
+								"                time.sleep(15)",
+								"            r53r_client.delete_resolver_rule(ResolverRuleId = rr_id)",
+								"def timeout(event,context):",
+								"    logging.error('Execution is about to time out, sending failure response to CloudFormation')",
+								"    cfnresponse.send(event, context, cfnresponse.FAILED, {}, None)",
+								"def lambda_handler(event, context):",
+								"    timer = threading.Timer((context.get_remaining_time_in_millis() / 1000.00) - 0.5, timeout, args=[event, context])",
+								"    timer.start()",
+								"    print('Received event: %s' % json.dumps(event))",
+								"    status = cfnresponse.SUCCESS",
+								"    try:",
+								"        vpc_id = event['ResourceProperties']['vpc_id']",
+								"        rdns_var = event['ResourceProperties']['rdns_variables']",
+								"        rdns_var = (rdns_var.split(','))",
+								"        if event['RequestType'] == 'Delete':",
+								"            del_r53rrule(vpc_id)",
+								"        else:",
+								"            create_r53rrule(vpc_id,rdns_var,event)",
+								"    except Exception as e:",
+								"        logging.error('Exception: %s' % e, exc_info=True)",
+								"        status = cfnresponse.FAILED",
+								"    finally:",
+								"        timer.cancel()",
+								"        cfnresponse.send(event, context, status, {})"
+							]
+						]
+					}
+				},
+				"Runtime": "python3.8",
+				"Role": {
+					"Fn::GetAtt": [
+						"R53RRrDNSLambdaExecutionResource",
+						"Arn"
+					]
+				},
+				"MemorySize": 256,
+				"Timeout": 600,
+				"Handler": "index.lambda_handler",
+				"ReservedConcurrentExecutions": 500,
+				"VpcConfig": {
+					"SecurityGroupIds": [
+						{
+							"Fn::Select": [
+								"0",
+								{
+									"Ref": "R53RROutboundSecurityGroupParameter"
+								}
+							]
+						}
+					],
+					"SubnetIds": [
+						{
+							"Fn::Select": [
+								"0",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						},
+						{
+							"Fn::Select": [
+								"1",
+								{
+									"Ref": "DSSubnetIdsParameter"
+								}
+							]
+						}
+					]
+				}
+			}
+		},
+		"CustomLambdaPolicyResource": {
+			"Type": "AWS::IAM::Policy",
+			"Condition": "CreateReverseDNS",
+			"Properties": {
+				"PolicyName": "CustomLambdaPolicyCFN",
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Action": [
+								"lambda:UpdateFunctionCode",
+								"lambda:UpdateFunctionConfiguration",
+								"lambda:ListFunctions",
+								"lambda:GetFunction",
+								"lambda:GetFunctionConfiguration",
+								"lambda:DeleteFunction"
+							],
+							"Resource": {
+								"Fn::GetAtt": [
+									"R53RRrDNSFunction",
+									"Arn"
+								]
+							}
+						}
+					]
+				},
+				"Roles": [
+					{
+						"Ref": "R53RRrDNSLambdaExecutionResource"
+					}
+				]
+			}
+		},
+		"InvokeR53RRrDNSFunction": {
+			"Type": "Custom::InvokeLambda",
+			"Condition": "CreateReverseDNS",
+			"DependsOn": "R53RRrDNSFunction",
+			"Properties": {
+				"ServiceToken": {
+					"Fn::GetAtt": [
+						"R53RRrDNSFunction",
+						"Arn"
+					]
+				},
+				"rdns_variables": {
+					"Ref": "R53RRrDNSParameter"
+				},
+				"stack_name": {
+					"Ref": "AWS::StackName"
+				},
+				"target_ip_addr1": {
+					"Fn::Select": [
+						"0",
+						{
+							"Fn::GetAtt": [
+								"DSMMSAD",
+								"DnsIpAddresses"
+							]
+						}
+					]
+				},
+				"target_ip_addr2": {
+					"Fn::Select": [
+						"1",
+						{
+							"Fn::GetAtt": [
+								"DSMMSAD",
+								"DnsIpAddresses"
+							]
+						}
+					]
+				},
+				"r53rr_outbound_endpoint": {
+					"Ref": "R53RROutbound"
+				},
+				"vpc_id": {
+					"Ref": "DSVpcIdParameter"
+				}
+			}
+		}
+	}
+}
