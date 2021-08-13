@@ -355,8 +355,8 @@
 										"route53resolver:CreateResolverRule"
 									],
 									"Resource": [
-										"arn:aws:route53resolver:*:497488328043:resolver-endpoint/*",
-										"arn:aws:route53resolver:*:497488328043:resolver-rule/*"
+										{ "Fn::Sub": "arn:aws:route53resolver:*:${AWS::AccountId}:resolver-endpoint/*" },
+										{ "Fn::Sub": "arn:aws:route53resolver:*:${AWS::AccountId}:resolver-rule/*" }
 									]
 								},
 								{
